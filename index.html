@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Processador de Guias</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.4;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            margin-bottom: 10px;
+            padding: 8px;
+            font-family: monospace;
+        }
+        button {
+            padding: 8px 12px;
+            margin: 5px 0;
+            cursor: pointer;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 6px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .procedure-row {
+            margin-bottom: 5px;
+        }
+        .status-pago {
+            background-color: #d4edda;
+        }
+        .status-em-auditoria {
+            background-color: #fff3cd;
+        }
+        .status-cancelada {
+            background-color: #f8d7da;
+        }
+        .status-outros {
+            background-color: #d1ecf1;
+        }
+    </style>
+</head>
+<body>
+    <h1>Processador de Guias Médicas</h1>
+
+    <h2>1. Colagem da Guia</h2>
+    <p>Cole abaixo o texto completo da guia (incluindo dados do beneficiário e a tabela de procedimentos). Após colar, clique em "Analisar Guia".</p>
+    <textarea id="guideInput" placeholder="Cole aqui a guia..."></textarea>
+    <button id="parseButton">Analisar Guia</button>
+
+    <div id="proceduresContainer" style="display:none; margin-top: 15px;">
+        <h3>Procedimentos encontrados</h3>
+        <div id="proceduresList"></div>
+        <button id="addTicket">Adicionar mini-ticket</button>
+    </div>
+
+    <h2>2. Mini-tickets gerados</h2>
+    <table id="ticketsTable">
+        <thead>
+            <tr>
+                <th>Identidade</th>
+                <th>Guia</th>
+                <th>Beneficiário</th>
+                <th>Remessa</th>
+                <th>Situação da Guia</th>
+                <th>Valor (R$)</th>
+                <th>Status (após processamento)</th>
+                <th>Ações</th>
+            </tr>
+        </thead>
+        <tbody id="ticketsBody"></tbody>
+    </table>
+
+    <!-- Botão para limpar todos os mini-tickets -->
+    <button id="resetTicketsButton" style="margin-top: 5px;">Limpar todos os mini-tickets</button>
+
+    <h2>3. Colagem de processamento (colagem 12)</h2>
+    <p>Cole abaixo as linhas da tabela de processamento (12ª colagem) para comparar e marcar mini-tickets como "Pago", "Em auditoria", "Guia cancelada" etc., então clique em "Processar Resumo".</p>
+    <textarea id="processingInput" placeholder="Cole aqui a colagem 12..."></textarea>
+    <button id="processSummaryButton">Processar Resumo</button>
+
+    <div id="statusSummary" style="margin-top:15px;"></div>
+
+    <!-- Botão para baixar o resumo (inclui data atual) -->
+    <button id="downloadSummaryButton" style="margin-top: 5px;">Baixar resumo</button>
+
+    <script>
+        // Tabelas de valores GEAP e CNEM. A busca pelo valor do exame será feita primeiro
+        // na tabela GEAP; se não encontrado, será utilizada a tabela CNEM.
+        const geapValues = {
+            // Sinônimos para Papanicolau
+            "PAPANICOLAU": 38.10,
+            "APANICOLAU": 38.10,
+            "PANICOLAU": 38.10,
+            "TRANSAMINASE OXALACÉTICA (AMINO TRANSFERASE ASPARTATO) - PESQUISA E/OU DOSAGEM": 9.94,
+            "SANGUE OCULTO PESQUISA NAS FEZES": 11.89,
+            "TRIGLICERÍDEOS - PESQUISA E/OU DOSAGEM": 9.56,
+            "HEPATITE B - HBSAG (AU ANTÍGENO AUSTRÁLIA) - PESQUISA E/OU DOSAGEM": 19.07,
+            "COLESTEROL TOTAL - PESQUISA E/OU DOSAGEM": 7.74,
+            "ANTÍGENO ESPECÍFICO PROSTÁTICO TOTAL (PSA) - PESQUISA E/OU DOSAGEM": 34.63,
+            "HEPATITE B - HBSAC (ANTI-ANTÍGENO DE SUPERFÍCIE) - PESQUISA E/OU DOSAGEM": 23.78,
+            "HEPATITE C - ANTI-HCV - PESQUISA E/OU DOSAGEM": 45.08,
+            "TRANSAMINASE PIRÚVICA (AMINO TRANSFERASE DE ALANINA) - PESQUISA E/OU DOSAGEM": 9.94,
+            "ROTINA DE URINA (CARACTERES FÍSICOS ELEMENTOS ANORMAIS E SEDIMENTOSCOPIA)": 10.54,
+            "CREATININA - PESQUISA E/OU DOSAGEM": 7.74,
+            "HEMOGRAMA COM CONTAGEM DE PLAQUETAS OU FRAÇÕES (ERITROGRAMA LEUCOGRAMA PLAQUETAS)": 10.93,
+            "CLÍNICO": 80.00,
+            "FOSFATASE ALCALINA - PESQUISA E/OU DOSAGEM": 11.44,
+            "PROTEÍNAS TOTAIS - PESQUISA E/OU DOSAGEM": 7.00,
+            "GAMA-GLUTAMIL TRANSFERASE - PESQUISA E/OU DOSAGEM": 3.53,
+            "BILIRRUBINAS (DIRETA, INDIRETA E TOTAL) - PESQUISA E/OU DOSAGEM": 2.18,
+            "COLINESTERASE (PARA CARBAMATOS ORGANOFOSFORADOS) - PESQUISA E/OU DOSAGEM": 3.65,
+            "ACETILCOLINESTERASE, EM ERITRÓCITOS - PESQUISA E/OU DOSAGEM": 14.25,
+            "GLICOSE": 7.74,
+            "GLICOSE - PESQUISA E/OU DOSAGEM": 7.74
+        };
+
+        const cnemValues = {
+            "AVALIAÇÃO GINECOLÓGICA": 93.86,
+            "OFTALMOLÓGICO (ACUIDADE VISUAL)": 93.86,
+            "HEPATITE B - HBCAC - IGM (ANTI-CORE IGM OU ACOREM) - PESQUISA E/OU DOSAGEM": 45.38,
+            "PROTEÍNAS TOTAIS - PESQUISA E/OU DOSAGEM": 6.66,
+            "ACETILCOLINESTERASE, EM ERITRÓCITOS - PESQUISA E/OU DOSAGEM": 14.25,
+            "HEPATITE B - HBCAC - IGG (ANTI-CORE IGM OU ACOREM) - PESQUISA E/OU DOSAGEM": 37.26,
+            "FOSFATASE ALCALINA - PESQUISA E/OU DOSAGEM": 16.02,
+            "GAMA-GLUTAMIL TRANSFERASE - PESQUISA E/OU DOSAGEM": 3.53,
+            "BILIRRUBINAS (DIRETA, INDIRETA E TOTAL) - PESQUISA E/OU DOSAGEM": 2.18,
+            "COLINESTERASE (PARA CARBAMATOS ORGANOFOSFORADOS) - PESQUISA E/OU DOSAGEM": 3.65,
+            "MAMOGRAFIA DIGITAL BILATERAL": 123.10,
+            "GLICOSE": 7.51,
+            "GLICOSE - PESQUISA E/OU DOSAGEM": 7.51
+        };
+
+        // Ícones em base64 para exibir no mini-ticket. Estes ícones são pequenos
+        // (redimensionados para 64x64) para não aumentar muito o tamanho da página.
+        const badgeIconUri = 'data:image/png;base64,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';
+        const avatarIconUri = 'data:image/png;base64,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';
+        // Opções de avaliação para consultas. Usamos getExamValue para buscar
+        // os valores conforme a ordem de prioridade das tabelas (GEAP primeiro, CNEM em seguida).
+        const consultationOptions = {
+            "AVALIAÇÃO GINECOLÓGICA": getExamValue("AVALIAÇÃO GINECOLÓGICA"),
+            "CLÍNICO": getExamValue("CLÍNICO"),
+            "OFTALMOLÓGICO (ACUIDADE VISUAL)": getExamValue("OFTALMOLÓGICO (ACUIDADE VISUAL)"),
+            "PAPANICOLAU": getExamValue("PAPANICOLAU")
+        };
+
+        const tickets = []; // Armazena mini-tickets
+
+        document.getElementById('parseButton').addEventListener('click', () => {
+            const text = document.getElementById('guideInput').value;
+            if (!text.trim()) {
+                alert('Cole a guia antes de analisar.');
+                return;
+            }
+            // Parse procedimentos e dados da guia
+            const { procedures, metadata } = parseGuide(text);
+            if (procedures.length === 0) {
+                alert('Nenhum procedimento encontrado. Verifique se colou a guia completa.');
+                return;
+            }
+            // Render procedimentos
+            renderProcedures(procedures);
+            // Armazenar metadados para uso na adição do ticket
+            const container = document.getElementById('proceduresContainer');
+            container.dataset.guia = metadata.guia || '';
+            container.dataset.beneficiario = metadata.beneficiario || '';
+            container.dataset.remessa = metadata.remessa || '';
+            container.dataset.situacaoGuia = metadata.situacaoGuia || '';
+            container.style.display = 'block';
+        });
+
+        document.getElementById('addTicket').addEventListener('click', () => {
+            // Ler seleção e calcular total
+            const container = document.getElementById('proceduresList');
+            const rows = container.querySelectorAll('.procedure-row');
+            let total = 0;
+            rows.forEach(row => {
+                const desc = row.dataset.desc;
+                const qty = parseFloat(row.dataset.qty);
+                if (row.dataset.type === 'consulta') {
+                    const select = row.querySelector('select');
+                    const option = select.value;
+                    const price = consultationOptions[option];
+                    total += price * qty;
+                } else {
+                    const price = getExamValue(desc);
+                    total += price * qty;
+                }
+            });
+            // Montar objeto do ticket
+            const dataContainer = document.getElementById('proceduresContainer').dataset;
+            const ticket = {
+                guia: dataContainer.guia || '',
+                beneficiario: dataContainer.beneficiario || '',
+                remessa: dataContainer.remessa || '',
+                situacaoGuia: dataContainer.situacaoGuia || '',
+                total: parseFloat(total.toFixed(2)),
+                status: '' // status será preenchido após processamento
+            };
+            tickets.push(ticket);
+            appendTicketToTable(ticket);
+            // Limpar área de procedimentos e esconder
+            container.innerHTML = '';
+            document.getElementById('proceduresContainer').style.display = 'none';
+            document.getElementById('guideInput').value = '';
+        });
+
+        document.getElementById('processSummaryButton').addEventListener('click', () => {
+            const text = document.getElementById('processingInput').value;
+            if (!text.trim()) {
+                alert('Cole a colagem 12 antes de processar.');
+                return;
+            }
+            // Processar resumo
+            const lines = text.trim().split(/\n+/);
+            const summaryTotals = {
+                pago: 0,
+                emAuditoria: 0,
+                cancelada: 0,
+                outros: 0,
+                total: 0
+            };
+            // Não reseta os status dos tickets neste processamento.
+            // Mantemos os status existentes para acumular resultados em múltiplos processamentos.
+            // Se uma linha de processamento corresponder a um ticket existente,
+            // o status desse ticket será atualizado abaixo. Caso contrário, permanece o status anterior.
+            // Para cada linha de processamento, tentar casar com ticket
+            lines.forEach(line => {
+                const parsed = parseProcessedRow(line);
+                if (!parsed) return;
+                const { guia, beneficiario, remessa, status } = parsed;
+                // Procurar tickets correspondentes
+                tickets.forEach(ticket => {
+                    if (ticket.guia === guia && ticket.beneficiario.toUpperCase() === beneficiario.toUpperCase() && ticket.remessa === remessa) {
+                        ticket.status = status;
+                    }
+                });
+            });
+            // Atualizar tabela e somatórios
+            updateTicketStatuses(summaryTotals);
+            displaySummary(summaryTotals);
+
+            // Limpar o campo de processamento para nova inserção
+            document.getElementById('processingInput').value = '';
+        });
+
+        // Botão para limpar todos os mini-tickets
+        document.getElementById('resetTicketsButton').addEventListener('click', () => {
+            // Esvaziar array de tickets
+            tickets.length = 0;
+            // Remover linhas da tabela
+            const tbody = document.getElementById('ticketsBody');
+            tbody.innerHTML = '';
+            // Limpar resumo de status
+            document.getElementById('statusSummary').innerHTML = '';
+        });
+
+        /**
+         * Faz o parse da guia completa: extrai procedimentos e metadados (guia, beneficiário, remessa, situação da guia)
+         */
+        function parseGuide(text) {
+    const lines = text.split(/\n+/);
+    const procedures = [];
+    // Flag que indica se já estamos na seção de procedimentos
+    let inProcedures = false;
+    let guia = '';
+    let beneficiario = '';
+    let remessa = '';
+    let situacaoGuia = '';
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Procurar guia: pode estar na linha com 'Guia Operadora' ou 'Número da Guia do Prestador'
+        if (!guia && (/N[ºo°]?\s*Guia\s*Operadora/i.test(line) || /Número da Guia do Prestador/i.test(line))) {
+            for (let j = i; j < lines.length; j++) {
+                const m = lines[j].match(/\b\d{8,10}\b/);
+                if (m) { guia = m[0]; break; }
+            }
+        }
+        // Procurar beneficiário: linha '13 - Nome'
+        if (!beneficiario && /^13\s*-\s*Nome/i.test(line)) {
+            let j = i + 1;
+            while (j < lines.length && !lines[j].trim()) j++;
+            if (j < lines.length) {
+                beneficiario = lines[j].trim();
+            }
+        }
+        // Procurar remessa
+        // A remessa aparece após o rótulo "Remessa:" junto da situação da guia e do lote.
+        // Para evitar capturar o número da guia novamente, buscamos nos próximos
+        // 3 linhas por um número de 5 a 9 dígitos que seja diferente da guia.
+        if (!remessa && /Remessa:/i.test(line)) {
+            const maxLookahead = 3;
+            for (let k = 0; k <= maxLookahead; k++) {
+                const candidateLine = lines[i + k] || '';
+                const nums = candidateLine.match(/\b\d{5,9}\b/g);
+                if (nums) {
+                    for (const num of nums) {
+                        if (num !== guia) {
+                            remessa = num;
+                            break;
+                        }
+                    }
+                }
+                if (remessa) break;
+            }
+        }
+        // Procurar situação da guia
+        if (!situacaoGuia && /Situação da Guia/i.test(line)) {
+            // Começamos a procurar a partir da próxima linha para evitar
+            // capturar o cabeçalho "Guia Operadora".
+            for (let j = i + 1; j < lines.length; j++) {
+                const sline = lines[j] || '';
+                // Ignorar linhas vazias ou com cabeçalhos que contenham "Guia Operadora" ou "Número da Guia"
+                if (!sline.trim()) continue;
+                if (/Guia Operadora/i.test(sline) || /Número da Guia/i.test(sline)) continue;
+                const idx = sline.search(/Guia/i);
+                if (idx !== -1) {
+                    // extrair a parte da linha a partir da palavra "Guia"
+                    let s = sline.substring(idx).trim();
+                    // Remover "Alterar" ou outras palavras extras no final
+                    s = s.replace(/\bAlterar\b/i, '').trim();
+                    situacaoGuia = s;
+                    break;
+                }
+            }
+        }
+        // Detectar início da seção de procedimentos
+        if (!inProcedures && /PROCEDIMENTO\(S\)/i.test(line)) {
+            inProcedures = true;
+            continue;
+        }
+        // Se estivermos na seção de procedimentos, procurar linhas que contenham data e quantidade
+        if (inProcedures) {
+            // Regex para capturar descrição e quantidade: data dd/mm/aaaa seguida da descrição e da quantidade (número com vírgula)
+            const procMatch = line.match(/\d{2}\/\d{2}\/\d{4}\s+(.*?)\s+(\d+,\d+)/);
+            if (procMatch) {
+                const descPart = procMatch[1].trim();
+                const qty = parseFloat(procMatch[2].replace(',', '.'));
+                procedures.push({ desc: descPart, qty });
+            }
+        }
+    }
+    return {
+        procedures,
+        metadata: { guia, beneficiario, remessa, situacaoGuia }
+    };
+}
+function renderProcedures(procedures) {
+            const container = document.getElementById('proceduresList');
+            container.innerHTML = '';
+            procedures.forEach(proc => {
+                const row = document.createElement('div');
+                row.className = 'procedure-row';
+                row.dataset.desc = proc.desc;
+                row.dataset.qty = proc.qty;
+                const label = document.createElement('span');
+                label.textContent = `${proc.desc} (Qtd: ${proc.qty}) `;
+                row.appendChild(label);
+                if (/CONSULTA EM CONSULTÓRIO/i.test(proc.desc)) {
+                    row.dataset.type = 'consulta';
+                    const select = document.createElement('select');
+                    for (const opt in consultationOptions) {
+                        const option = document.createElement('option');
+                        option.value = opt;
+                        option.textContent = opt;
+                        select.appendChild(option);
+                    }
+                    row.appendChild(select);
+                } else {
+                    row.dataset.type = 'exame';
+                    const price = getExamValue(proc.desc);
+                    const spanVal = document.createElement('span');
+                    spanVal.textContent = ` → Valor unitário: R$ ${price.toFixed(2)}`;
+                    spanVal.style.marginLeft = '5px';
+                    row.appendChild(spanVal);
+                }
+                container.appendChild(row);
+            });
+        }
+
+        /**
+         * Retorna o valor de um exame (ou 0 se não encontrado). Tenta casar nome completo ou prefixo.
+         */
+        function getExamValue(desc) {
+            // Normaliza uma string para facilitar a comparação: coloca em
+            // maiúsculas, remove acentos e sinais de pontuação e reduz
+            // múltiplos espaços.
+            const normalize = (str) => {
+                return str
+                    .toUpperCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '') // remove acentos
+                    .replace(/[(),.;:\-]/g, ' ') // remove pontuações comuns
+                    .replace(/\s+/g, ' ') // espaços múltiplos
+                    .trim();
+            };
+            const normDesc = normalize(desc);
+            // Tenta casar primeiro nos valores GEAP. Em seguida, se não encontrado, na tabela CNEM.
+            // Busca exata ou por prefixo após normalização.
+            for (const k in geapValues) {
+                const normKey = normalize(k);
+                if (normDesc === normKey || normDesc.startsWith(normKey)) {
+                    return geapValues[k];
+                }
+            }
+            for (const k in cnemValues) {
+                const normKey = normalize(k);
+                if (normDesc === normKey || normDesc.startsWith(normKey)) {
+                    return cnemValues[k];
+                }
+            }
+            return 0;
+        }
+
+        /**
+         * Adiciona linha na tabela de mini-tickets
+         */
+        function appendTicketToTable(ticket) {
+            const tbody = document.getElementById('ticketsBody');
+            const tr = document.createElement('tr');
+            // Coluna de ícones (identidade)
+            const tdIcon = document.createElement('td');
+            tdIcon.innerHTML = `<img src="${badgeIconUri}" alt="Cracha" style="width:24px;height:24px;vertical-align:middle;margin-right:4px;">` +
+                               `<img src="${avatarIconUri}" alt="Avatar" style="width:24px;height:24px;vertical-align:middle;">`;
+            // Colunas de dados
+            const tdGuia = document.createElement('td'); tdGuia.textContent = ticket.guia;
+            const tdBenef = document.createElement('td'); tdBenef.textContent = ticket.beneficiario;
+            const tdRemessa = document.createElement('td'); tdRemessa.textContent = ticket.remessa;
+            const tdSituacaoGuia = document.createElement('td'); tdSituacaoGuia.textContent = ticket.situacaoGuia;
+            const tdValor = document.createElement('td'); tdValor.textContent = ticket.total.toFixed(2);
+            const tdStatus = document.createElement('td'); tdStatus.textContent = '';
+            // Coluna de ações
+            const tdActions = document.createElement('td');
+            // Botão editar
+            const btnEdit = document.createElement('button');
+            btnEdit.textContent = 'Editar';
+            btnEdit.style.marginRight = '5px';
+            btnEdit.addEventListener('click', () => {
+                const novoValor = prompt('Digite o novo valor (R$):', ticket.total.toFixed(2));
+                if (novoValor !== null) {
+                    const parsed = parseFloat(novoValor.replace(',', '.'));
+                    if (!isNaN(parsed)) {
+                        ticket.total = parsed;
+                        tdValor.textContent = parsed.toFixed(2);
+                        // Atualizar totais se já houver processamento
+                        if (ticket.status) {
+                            // Reprocessar os totais
+                            const summaryTotals = { pago:0, emAuditoria:0, cancelada:0, outros:0 };
+                            updateTicketStatuses(summaryTotals);
+                            displaySummary(summaryTotals);
+                        }
+                    }
+                }
+            });
+            // Botão excluir
+            const btnDelete = document.createElement('button');
+            btnDelete.textContent = 'Excluir';
+            btnDelete.addEventListener('click', () => {
+                // Remover da tabela
+                tbody.removeChild(tr);
+                // Remover do array de tickets
+                const idx = tickets.indexOf(ticket);
+                if (idx !== -1) tickets.splice(idx, 1);
+                // Atualizar resumo se necessário
+                const summaryTotals = { pago:0, emAuditoria:0, cancelada:0, outros:0 };
+                updateTicketStatuses(summaryTotals);
+                displaySummary(summaryTotals);
+            });
+            tdActions.appendChild(btnEdit);
+            tdActions.appendChild(btnDelete);
+            // Montar a linha
+            tr.appendChild(tdIcon);
+            tr.appendChild(tdGuia);
+            tr.appendChild(tdBenef);
+            tr.appendChild(tdRemessa);
+            tr.appendChild(tdSituacaoGuia);
+            tr.appendChild(tdValor);
+            tr.appendChild(tdStatus);
+            tr.appendChild(tdActions);
+            tbody.appendChild(tr);
+            // Guardar referência da linha no ticket (para atualização posterior)
+            ticket.rowElement = tr;
+            ticket.statusCell = tdStatus;
+        }
+
+        /**
+         * Parse de linha de processamento (colagem 12) -> retorna objeto com guia, beneficiario, remessa e status
+         */
+        function parseProcessedRow(line) {
+            const parts = line.trim().split(/\s+/);
+            let i = 0;
+            let guia = '';
+            while (i < parts.length) {
+                if (/^\d{8,}$/.test(parts[i])) {
+                    guia = parts[i];
+                    break;
+                }
+                i++;
+            }
+            if (!guia) return null;
+            i++;
+            while (i < parts.length && /^\d+$/.test(parts[i])) i++;
+            let beneficiaryParts = [];
+            while (i < parts.length && !/^\d{2}\/\d{2}\/\d{4}$/.test(parts[i])) {
+                beneficiaryParts.push(parts[i]);
+                i++;
+            }
+            const beneficiario = beneficiaryParts.join(' ');
+            if (i < parts.length) i++;
+            let remessa = '';
+            while (i < parts.length) {
+                if (/^\d+$/.test(parts[i])) {
+                    remessa = parts[i];
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            while (i < parts.length && /^\d+$/.test(parts[i])) i++;
+            let status = parts[parts.length - 1];
+            if (parts.length >= 2 && parts[parts.length - 2].toLowerCase() === 'em') {
+                status = parts[parts.length - 2] + ' ' + parts[parts.length - 1];
+            }
+            return { guia, beneficiario, remessa, status };
+        }
+
+        /**
+         * Atualiza status de cada ticket na tabela, contabilizando totais por categoria
+         */
+        function updateTicketStatuses(summaryTotals) {
+            tickets.forEach(ticket => {
+                // Acumular o total geral de todos os tickets
+                summaryTotals.total += ticket.total;
+                const status = ticket.status.toLowerCase();
+                let cssClass = '';
+                if (status.includes('pago')) {
+                    summaryTotals.pago += ticket.total;
+                    cssClass = 'status-pago';
+                } else if (status.includes('auditoria')) {
+                    summaryTotals.emAuditoria += ticket.total;
+                    cssClass = 'status-em-auditoria';
+                } else if (ticket.situacaoGuia.toLowerCase().includes('cancelada')) {
+                    summaryTotals.cancelada += ticket.total;
+                    cssClass = 'status-cancelada';
+                } else if (status) {
+                    summaryTotals.outros += ticket.total;
+                    cssClass = 'status-outros';
+                } else {
+                    cssClass = '';
+                }
+                if (ticket.statusCell) {
+                    ticket.statusCell.textContent = ticket.status;
+                    ticket.rowElement.classList.remove('status-pago','status-em-auditoria','status-cancelada','status-outros');
+                    if (cssClass) ticket.rowElement.classList.add(cssClass);
+                }
+            });
+        }
+
+        /**
+         * Exibe resumo de totais por status
+         */
+        function displaySummary(summary) {
+            const div = document.getElementById('statusSummary');
+            div.innerHTML = '';
+            const p = document.createElement('p');
+            p.innerHTML = `<strong>Totais:</strong><br>
+                Total geral: R$ ${summary.total.toFixed(2)}<br>
+                Pago: R$ ${summary.pago.toFixed(2)}<br>
+                Em auditoria: R$ ${summary.emAuditoria.toFixed(2)}<br>
+                Cancelada: R$ ${summary.cancelada.toFixed(2)}<br>
+                Outros: R$ ${summary.outros.toFixed(2)}`;
+            div.appendChild(p);
+        }
+
+        // Evento para gerar e baixar um arquivo de resumo com a data atual
+        document.getElementById('downloadSummaryButton').addEventListener('click', () => {
+            // Calcular totais atuais (sem alterar a interface)
+            const totals = { pago: 0, emAuditoria: 0, cancelada: 0, outros: 0, total: 0 };
+            tickets.forEach(ticket => {
+                totals.total += ticket.total;
+                const status = ticket.status.toLowerCase();
+                if (status.includes('pago')) {
+                    totals.pago += ticket.total;
+                } else if (status.includes('auditoria')) {
+                    totals.emAuditoria += ticket.total;
+                } else if (ticket.situacaoGuia.toLowerCase().includes('cancelada')) {
+                    totals.cancelada += ticket.total;
+                } else if (status) {
+                    totals.outros += ticket.total;
+                }
+            });
+            const now = new Date();
+            // Data no formato dd/mm/aaaa para o conteúdo e aaaa-mm-dd para o nome do arquivo
+            const dateStr = now.toLocaleDateString('pt-BR');
+            const fileDate = now.toISOString().split('T')[0];
+            let content = `Data: ${dateStr}\n\nResumo:\n`;
+            content += `Total geral: R$ ${totals.total.toFixed(2)}\n`;
+            content += `Pago: R$ ${totals.pago.toFixed(2)}\n`;
+            content += `Em auditoria: R$ ${totals.emAuditoria.toFixed(2)}\n`;
+            content += `Cancelada: R$ ${totals.cancelada.toFixed(2)}\n`;
+            content += `Outros: R$ ${totals.outros.toFixed(2)}\n\n`;
+            content += 'Mini-tickets:\n';
+            tickets.forEach(t => {
+                content += `${t.guia}; ${t.beneficiario}; ${t.remessa}; ${t.situacaoGuia}; ${t.total.toFixed(2)}; ${t.status}\n`;
+            });
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `resumo_${fileDate}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+    </script>
+</body>
+</html>
